@@ -44,10 +44,10 @@
 
 #include "../ycbcr/vktYCbCrUtil.hpp"
 
-#if (DE_OS != DE_OS_ANDROID)
-#include "vktVideoSessionNvUtils.hpp"
-#include "vktVideoSessionFfmpegUtils.hpp"
-#include "vktVideoBaseDecodeUtils.hpp"
+#ifdef DE_BUILD_VIDEO
+	#include "vktVideoSessionNvUtils.hpp"
+	#include "extESExtractor.hpp"
+	#include "vktVideoBaseDecodeUtils.hpp"
 #endif
 
 
@@ -255,7 +255,7 @@ public:
 																				 const CaseDef&					data);
 										~VideoDecodeTestInstance				(void);
 
-	MovePtr<vector<deUint8>>			loadTestVideoData						(void);
+	std::string							getTestVideoData						(void);
 
 	tcu::TestStatus						iterate									(void);
 	tcu::TestStatus						iterateSingleFrame						(void);
@@ -335,23 +335,23 @@ VideoDecodeTestInstance::~VideoDecodeTestInstance (void)
 {
 }
 
-MovePtr<vector<deUint8>> VideoDecodeTestInstance::loadTestVideoData (void)
+std::string VideoDecodeTestInstance::getTestVideoData (void)
 {
 	switch (m_caseDef.testType)
 	{
 		case TEST_TYPE_H264_DECODE_I:
 		case TEST_TYPE_H264_DECODE_I_P:
 		case TEST_TYPE_H264_DECODE_I_P_NOT_MATCHING_ORDER:
-		case TEST_TYPE_H264_DECODE_QUERY_RESULT_WITH_STATUS:	return loadVideoDataClipA();
+		case TEST_TYPE_H264_DECODE_QUERY_RESULT_WITH_STATUS:	return getVideoDataClipA();
 		case TEST_TYPE_H264_DECODE_I_P_B_13:
-		case TEST_TYPE_H264_DECODE_I_P_B_13_NOT_MATCHING_ORDER:	return loadVideoDataClipH264G13();
+		case TEST_TYPE_H264_DECODE_I_P_B_13_NOT_MATCHING_ORDER:	return getVideoDataClipH264G13();
 		case TEST_TYPE_H264_DECODE_RESOLUTION_CHANGE:
-		case TEST_TYPE_H264_DECODE_RESOLUTION_CHANGE_DPB:		return loadVideoDataClipC();
+		case TEST_TYPE_H264_DECODE_RESOLUTION_CHANGE_DPB:		return getVideoDataClipC();
 		case TEST_TYPE_H265_DECODE_I:
 		case TEST_TYPE_H265_DECODE_I_P:
-		case TEST_TYPE_H265_DECODE_I_P_NOT_MATCHING_ORDER:		return loadVideoDataClipD();
+		case TEST_TYPE_H265_DECODE_I_P_NOT_MATCHING_ORDER:		return getVideoDataClipD();
 		case TEST_TYPE_H265_DECODE_I_P_B_13:
-		case TEST_TYPE_H265_DECODE_I_P_B_13_NOT_MATCHING_ORDER:	return loadVideoDataClipH265G13();
+		case TEST_TYPE_H265_DECODE_I_P_B_13_NOT_MATCHING_ORDER:	return getVideoDataClipH265G13();
 
 		default:												TCU_THROW(InternalError, "Unknown testType");
 	}
@@ -369,11 +369,8 @@ tcu::TestStatus VideoDecodeTestInstance::iterate (void)
 
 vk::VkExtensionProperties getExtensionVersion (VkVideoCodecOperationFlagBitsKHR videoCodecOperation)
 {
-	// FIXME: last spec version accepted by the parser function
-	//static const vk::VkExtensionProperties h264StdExtensionVersion = { VK_STD_VULKAN_VIDEO_CODEC_H264_DECODE_EXTENSION_NAME, VK_STD_VULKAN_VIDEO_CODEC_H264_DECODE_SPEC_VERSION };
-	static const vk::VkExtensionProperties h264StdExtensionVersion = { VK_STD_VULKAN_VIDEO_CODEC_H264_DECODE_EXTENSION_NAME, VK_MAKE_VIDEO_STD_VERSION(0, 9, 8) };
-	//static const vk::VkExtensionProperties h265StdExtensionVersion = { VK_STD_VULKAN_VIDEO_CODEC_H265_DECODE_EXTENSION_NAME, VK_STD_VULKAN_VIDEO_CODEC_H265_DECODE_SPEC_VERSION };
-	static const vk::VkExtensionProperties h265StdExtensionVersion = { VK_STD_VULKAN_VIDEO_CODEC_H265_DECODE_EXTENSION_NAME, VK_MAKE_VIDEO_STD_VERSION(0, 9, 9) };
+	static const vk::VkExtensionProperties h264StdExtensionVersion = { VK_STD_VULKAN_VIDEO_CODEC_H264_DECODE_EXTENSION_NAME, VK_STD_VULKAN_VIDEO_CODEC_H264_DECODE_SPEC_VERSION };
+	static const vk::VkExtensionProperties h265StdExtensionVersion = { VK_STD_VULKAN_VIDEO_CODEC_H265_DECODE_EXTENSION_NAME, VK_STD_VULKAN_VIDEO_CODEC_H265_DECODE_SPEC_VERSION };
 
 	if (videoCodecOperation == VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR) {
         return h264StdExtensionVersion;
@@ -387,6 +384,7 @@ vk::VkExtensionProperties getExtensionVersion (VkVideoCodecOperationFlagBitsKHR 
 
 tcu::TestStatus VideoDecodeTestInstance::iterateSingleFrame (void)
 {
+	tcu::TestLog&							log							= m_context.getTestContext().getLog();
 	const VideoDevice::VideoDeviceFlags		videoDeviceFlags			= VideoDevice::VIDEO_DEVICE_FLAG_REQUIRE_SYNC2_OR_NOT_SUPPORTED
 																		| (m_queryWithStatusRequired ? VideoDevice::VIDEO_DEVICE_FLAG_QUERY_WITH_STATUS_FOR_DECODE_SUPPORT : 0);
 	const VkDevice							device						= getDeviceSupportingQueue(VK_QUEUE_VIDEO_DECODE_BIT_KHR | VK_QUEUE_TRANSFER_BIT, m_videoCodecOperation, videoDeviceFlags);
@@ -394,8 +392,7 @@ tcu::TestStatus VideoDecodeTestInstance::iterateSingleFrame (void)
 	const deUint32							queueFamilyIndexDecode		= getQueueFamilyIndexDecode();
 	const deUint32							queueFamilyIndexTransfer	= getQueueFamilyIndexTransfer();
 	Allocator&								allocator					= getAllocator();
-	MovePtr<vector<deUint8>>				videoData					= loadTestVideoData();
-	MovePtr<IfcFfmpegDemuxer>				ffmpegDemuxer				(m_decoder->GetIfcFfmpegFuncs()->createIfcFfmpegDemuxer(videoData));
+	std::string								videoData					= getTestVideoData();
 	VkExtensionProperties					stdExtensionVersion			= getExtensionVersion(m_videoCodecOperation);
 
 	MovePtr<IfcVulkanVideoDecodeParser>		vulkanVideoDecodeParser		(m_decoder->GetNvFuncs()->createIfcVulkanVideoDecodeParser(m_videoCodecOperation, &stdExtensionVersion));
@@ -404,6 +401,7 @@ tcu::TestStatus VideoDecodeTestInstance::iterateSingleFrame (void)
 	int32_t									frameNumber					= 0;
 	int32_t									framesCorrect				= 0;
 	DecodedFrame							frame						= initDecodeFrame();
+	ESEDemuxer								demuxer(videoData, log);
 
 	m_decoder->initialize(m_videoCodecOperation, vkd, device, queueFamilyIndexTransfer, queueFamilyIndexDecode, allocator);
 
@@ -422,7 +420,7 @@ tcu::TestStatus VideoDecodeTestInstance::iterateSingleFrame (void)
 			{
 				deUint8*	pData			= 0;
 				deInt64		size			= 0;
-				const bool	demuxerSuccess	= ffmpegDemuxer->demux(&pData, &size);
+				const bool	demuxerSuccess	= demuxer.Demux(&pData, &size);
 				const bool	parserSuccess	= vulkanVideoDecodeParser->parseByteStream(pData, size);
 
 				if (!demuxerSuccess || !parserSuccess)
@@ -464,6 +462,7 @@ tcu::TestStatus VideoDecodeTestInstance::iterateSingleFrame (void)
 
 tcu::TestStatus VideoDecodeTestInstance::iterateDoubleFrame (void)
 {
+	tcu::TestLog&							log							= m_context.getTestContext().getLog();
 	const VideoDevice::VideoDeviceFlags		videoDeviceFlags			= VideoDevice::VIDEO_DEVICE_FLAG_REQUIRE_SYNC2_OR_NOT_SUPPORTED
 																		| (m_queryWithStatusRequired ? VideoDevice::VIDEO_DEVICE_FLAG_QUERY_WITH_STATUS_FOR_DECODE_SUPPORT : 0);
 	const VkDevice							device						= getDeviceSupportingQueue(VK_QUEUE_VIDEO_DECODE_BIT_KHR | VK_QUEUE_TRANSFER_BIT, m_videoCodecOperation, videoDeviceFlags);
@@ -471,8 +470,7 @@ tcu::TestStatus VideoDecodeTestInstance::iterateDoubleFrame (void)
 	const deUint32							queueFamilyIndexDecode		= getQueueFamilyIndexDecode();
 	const deUint32							queueFamilyIndexTransfer	= getQueueFamilyIndexTransfer();
 	Allocator&								allocator					= getAllocator();
-	MovePtr<vector<deUint8>>				videoData					= loadTestVideoData();
-	MovePtr<IfcFfmpegDemuxer>				ffmpegDemuxer				(m_decoder->GetIfcFfmpegFuncs()->createIfcFfmpegDemuxer(videoData));
+	std::string								videoData					= getTestVideoData();
 	VkExtensionProperties					stdExtensionVersion			= getExtensionVersion(m_videoCodecOperation);
 
 	MovePtr<IfcVulkanVideoDecodeParser>		vulkanVideoDecodeParser		(m_decoder->GetNvFuncs()->createIfcVulkanVideoDecodeParser(m_videoCodecOperation, &stdExtensionVersion));
@@ -481,6 +479,7 @@ tcu::TestStatus VideoDecodeTestInstance::iterateDoubleFrame (void)
 	int32_t									frameNumber					= 0;
 	int32_t									framesCorrect				= 0;
 	DecodedFrame							frames[2]					= { initDecodeFrame(), initDecodeFrame() };
+	ESEDemuxer								demuxer(videoData, log);
 
 	m_decoder->initialize(m_videoCodecOperation, vkd, device, queueFamilyIndexTransfer, queueFamilyIndexDecode, allocator);
 
@@ -499,7 +498,7 @@ tcu::TestStatus VideoDecodeTestInstance::iterateDoubleFrame (void)
 			{
 				deUint8*	pData			= 0;
 				deInt64		size			= 0;
-				const bool	demuxerSuccess	= ffmpegDemuxer->demux(&pData, &size);
+				const bool	demuxerSuccess	= demuxer.Demux(&pData, &size);
 				const bool	parserSuccess	= vulkanVideoDecodeParser->parseByteStream(pData, size);
 
 				if (!demuxerSuccess || !parserSuccess)
@@ -555,6 +554,7 @@ tcu::TestStatus VideoDecodeTestInstance::iterateDoubleFrame (void)
 
 tcu::TestStatus VideoDecodeTestInstance::iterateMultipleFrame (void)
 {
+	tcu::TestLog&						log							= m_context.getTestContext().getLog();
 	const VideoDevice::VideoDeviceFlags	videoDeviceFlags			= VideoDevice::VIDEO_DEVICE_FLAG_REQUIRE_SYNC2_OR_NOT_SUPPORTED
 																	| (m_queryWithStatusRequired ? VideoDevice::VIDEO_DEVICE_FLAG_QUERY_WITH_STATUS_FOR_DECODE_SUPPORT : 0);
 	const VkDevice						device						= getDeviceSupportingQueue(VK_QUEUE_VIDEO_DECODE_BIT_KHR | VK_QUEUE_TRANSFER_BIT, m_videoCodecOperation, videoDeviceFlags);
@@ -562,8 +562,7 @@ tcu::TestStatus VideoDecodeTestInstance::iterateMultipleFrame (void)
 	const deUint32						queueFamilyIndexDecode		= getQueueFamilyIndexDecode();
 	const deUint32						queueFamilyIndexTransfer	= getQueueFamilyIndexTransfer();
 	Allocator&							allocator					= getAllocator();
-	MovePtr<vector<deUint8>>			videoData					= loadTestVideoData();
-	MovePtr<IfcFfmpegDemuxer>			ffmpegDemuxer				(m_decoder->GetIfcFfmpegFuncs()->createIfcFfmpegDemuxer(videoData));
+	std::string							videoData					= getTestVideoData();
 	VkExtensionProperties				stdExtensionVersion			= getExtensionVersion(m_videoCodecOperation);
 
 	MovePtr<IfcVulkanVideoDecodeParser>	vulkanVideoDecodeParser		(m_decoder->GetNvFuncs()->createIfcVulkanVideoDecodeParser(m_videoCodecOperation, &stdExtensionVersion));
@@ -572,6 +571,7 @@ tcu::TestStatus VideoDecodeTestInstance::iterateMultipleFrame (void)
 	int32_t								frameNumber					= 0;
 	int32_t								framesCorrect				= 0;
 	vector<DecodedFrame>				frames						(m_frameCountTrigger, initDecodeFrame());
+	ESEDemuxer							demuxer(videoData, log);
 
 	m_decoder->initialize(m_videoCodecOperation, vkd, device, queueFamilyIndexTransfer, queueFamilyIndexDecode, allocator);
 
@@ -588,7 +588,7 @@ tcu::TestStatus VideoDecodeTestInstance::iterateMultipleFrame (void)
 			{
 				deUint8*	pData			= 0;
 				deInt64		size			= 0;
-				const bool	demuxerSuccess	= ffmpegDemuxer->demux(&pData, &size);
+				const bool	demuxerSuccess	= demuxer.Demux(&pData, &size);
 				const bool	parserSuccess	= vulkanVideoDecodeParser->parseByteStream(pData, size);
 
 				if (!demuxerSuccess || !parserSuccess)
@@ -847,8 +847,7 @@ public:
 																		 const CaseDef&				data);
 										~DualVideoDecodeTestInstance	(void);
 
-	MovePtr<vector<deUint8>>			loadTestVideoData				(bool						primary);
-
+	std::string							getTestVideoData				(bool						primary);
 	tcu::TestStatus						iterate							(void);
 	bool								verifyImage						(bool						firstClip,
 																		 int32_t					frameNumber,
@@ -896,29 +895,29 @@ DualVideoDecodeTestInstance::~DualVideoDecodeTestInstance (void)
 {
 }
 
-MovePtr<vector<deUint8>> DualVideoDecodeTestInstance::loadTestVideoData (bool primary)
+std::string DualVideoDecodeTestInstance::getTestVideoData (bool primary)
 {
 	switch (m_caseDef.testType)
 	{
-		case TEST_TYPE_H264_DECODE_INTERLEAVED:					return primary ? loadVideoDataClipA() : loadVideoDataClipB();
-		case TEST_TYPE_H264_BOTH_DECODE_ENCODE_INTERLEAVED:		return loadVideoDataClipA();
-		case TEST_TYPE_H264_H265_DECODE_INTERLEAVED:			return primary ? loadVideoDataClipA() : loadVideoDataClipD();
+		case TEST_TYPE_H264_DECODE_INTERLEAVED:					return primary ? getVideoDataClipA() : getVideoDataClipB();
+		case TEST_TYPE_H264_BOTH_DECODE_ENCODE_INTERLEAVED:		return getVideoDataClipA();
+		case TEST_TYPE_H264_H265_DECODE_INTERLEAVED:			return primary ? getVideoDataClipA() : getVideoDataClipD();
 		default:												TCU_THROW(InternalError, "Unknown testType");
 	}
 }
 
 tcu::TestStatus DualVideoDecodeTestInstance::iterate (void)
 {
+	tcu::TestLog&						log							= m_context.getTestContext().getLog();
 	const VideoDevice::VideoDeviceFlags	videoDeviceFlags			= VideoDevice::VIDEO_DEVICE_FLAG_REQUIRE_SYNC2_OR_NOT_SUPPORTED;
 	const VkDevice						device						= getDeviceSupportingQueue(VK_QUEUE_VIDEO_DECODE_BIT_KHR | VK_QUEUE_TRANSFER_BIT, m_videoCodecOperation, videoDeviceFlags);
 	const DeviceInterface&				vkd							= getDeviceDriver();
 	const deUint32						queueFamilyIndexDecode		= getQueueFamilyIndexDecode();
 	const deUint32						queueFamilyIndexTransfer	= getQueueFamilyIndexTransfer();
 	Allocator&							allocator					= getAllocator();
-	MovePtr<vector<deUint8>>			videoData1					= loadTestVideoData(true);
-	MovePtr<vector<deUint8>>			videoData2					= loadTestVideoData(false);
-	MovePtr<IfcFfmpegDemuxer>			ffmpegDemuxer1				(m_decoder1->GetIfcFfmpegFuncs()->createIfcFfmpegDemuxer(videoData1));
-	MovePtr<IfcFfmpegDemuxer>			ffmpegDemuxer2				(m_decoder2->GetIfcFfmpegFuncs()->createIfcFfmpegDemuxer(videoData2));
+	std::string							videoData1					= getTestVideoData(true);
+	std::string							videoData2					= getTestVideoData(false);
+
 	VkExtensionProperties				stdExtensionVersion1		= getExtensionVersion(m_videoCodecOperation1);
 	VkExtensionProperties				stdExtensionVersion2		= getExtensionVersion(m_videoCodecOperation2);
 
@@ -927,6 +926,8 @@ tcu::TestStatus DualVideoDecodeTestInstance::iterate (void)
 	int32_t								frameNumber					= 0;
 	int32_t								framesCorrect				= 0;
 	vector<DecodedFrame>				frames						(m_frameCountTrigger, initDecodeFrame());
+	ESEDemuxer							demuxer1(videoData1, log);
+	ESEDemuxer							demuxer2(videoData2, log);
 
 	m_decoder1->initialize(m_videoCodecOperation1, vkd, device, queueFamilyIndexTransfer, queueFamilyIndexDecode, allocator);
 
@@ -950,7 +951,7 @@ tcu::TestStatus DualVideoDecodeTestInstance::iterate (void)
 		{
 			deUint8*	pData			= 0;
 			deInt64		size			= 0;
-			const bool	demuxerSuccess	= ffmpegDemuxer1->demux(&pData, &size);
+			const bool	demuxerSuccess	= demuxer1.Demux(&pData, &size);
 			const bool	parserSuccess	= vulkanVideoDecodeParser1->parseByteStream(pData, size);
 
 			if (!demuxerSuccess || !parserSuccess)
@@ -968,7 +969,7 @@ tcu::TestStatus DualVideoDecodeTestInstance::iterate (void)
 		{
 			deUint8*	pData			= 0;
 			deInt64		size			= 0;
-			const bool	demuxerSuccess	= ffmpegDemuxer2->demux(&pData, &size);
+			const bool	demuxerSuccess	= demuxer2.Demux(&pData, &size);
 			const bool	parserSuccess	= vulkanVideoDecodeParser2->parseByteStream(pData, size);
 
 			if (!demuxerSuccess || !parserSuccess)

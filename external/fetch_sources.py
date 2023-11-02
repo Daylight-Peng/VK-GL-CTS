@@ -59,21 +59,14 @@ class Source:
 			shutil.rmtree(fullDstPath, ignore_errors=False)
 
 class SourcePackage (Source):
-	def __init__(self, url, filename, checksum, baseDir, extractDir = "src", postExtract=None):
+	def __init__(self, url, checksum, baseDir, extractDir = "src", postExtract=None):
 		Source.__init__(self, baseDir, extractDir)
 		self.url			= url
-		self.filename		= filename
+		self.filename		= os.path.basename(self.url)
 		self.checksum		= checksum
 		self.archiveDir		= "packages"
 		self.postExtract	= postExtract
 		self.sysNdx			= {"Windows":0, "Linux":1, "Darwin":2}[platform.system()]
-		self.FFmpeg			= "FFmpeg" in url
-
-		if self.FFmpeg:
-			if self.sysNdx != 2:
-				self.url = self.url.split()[self.sysNdx]
-				self.checksum =	self.checksum.split()[self.sysNdx]
-				self.filename =	self.filename.split()[self.sysNdx]
 
 	def clean (self):
 		Source.clean(self)
@@ -296,20 +289,13 @@ def postExtractLibpng (path):
 PACKAGES = [
 	SourcePackage(
 		"http://zlib.net/fossils/zlib-1.2.13.tar.gz",
-		"zlib-1.2.13.tar.gz",
 		"b3a24de97a8fdbc835b9833169501030b8977031bcb54b3b3ac13740f846ab30",
 		"zlib"),
 	SourcePackage(
 		"http://prdownloads.sourceforge.net/libpng/libpng-1.6.27.tar.gz",
-		"libpng-1.6.27.tar.gz",
 		"c9d164ec247f426a525a7b89936694aefbc91fb7a50182b198898b8fc91174b4",
 		"libpng",
 		postExtract = postExtractLibpng),
-	SourcePackage(
-		"http://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2021-05-31-13-09/ffmpeg-N-102631-gbaf5cc5b7a-win64-lgpl-shared.zip https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2021-05-31-13-09/ffmpeg-N-102631-gbaf5cc5b7a-linux64-lgpl-shared.tar.xz",
-		"ffmpeg-N-102631-gbaf5cc5b7a-win64-lgpl-shared.zip ffmpeg-N-102631-gbaf5cc5b7a-linux64-lgpl-shared.tar.xz",
-		"9c1855b066d75de6ea6b2c3bb2c1cb87d3bd51dee056adfdcb00e4eaa1e437ad 22454a9a9639898171351b07b6f6c17288249596f96a28b7da67823988a316f9",
-		"ffmpeg"),
 	SourceFile(
 		"https://raw.githubusercontent.com/baldurk/renderdoc/v1.1/renderdoc/api/app/renderdoc_app.h",
 		"renderdoc_app.h",
@@ -339,7 +325,7 @@ PACKAGES = [
 	GitRepo(
 		"https://github.com/google/amber.git",
 		"git@github.com:google/amber.git",
-		"8b145a6c89dcdb4ec28173339dd176fb7b6f43ed",
+		"933ecb4d6288675a92eb1650e0f52b1d7afe8273",
 		"amber"),
 	GitRepo(
 		"https://github.com/open-source-parsers/jsoncpp.git",
@@ -349,8 +335,13 @@ PACKAGES = [
 	GitRepo(
 		"https://github.com/nvpro-samples/vk_video_samples.git",
 		None,
-		"68398ce672fb3b331ee6c998392951bba37e7e4d",
+		"7d68747d3524842afaf050c5e00a10f5b8c07904",
 		"video-parser"),
+	GitRepo(
+		"https://github.com/Igalia/ESExtractor.git",
+		"git@github.com:Igalia/ESExtractor.git",
+		"v0.2.5",
+		"ESExtractor"),
 ]
 
 def parseArgs ():
