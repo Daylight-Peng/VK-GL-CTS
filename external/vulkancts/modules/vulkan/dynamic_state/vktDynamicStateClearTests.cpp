@@ -5,6 +5,7 @@
  * Copyright (c) 2022 LunarG, Inc.
  * Copyright (c) 2022 The Khronos Group Inc.
  * Copyright (c) 2022 Google LLC
+ * Copyright (c) 2023 Nintendo
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -116,11 +117,11 @@ public:
 		command(false);
 
 		const vk::VkClearColorValue clearColor = { { 0.0f, 0.0f, 0.0f, 1.0f } };
-		beginRenderPassWithClearColor(clearColor, true);
+		beginRenderPassWithClearColor(clearColor, true, true);
 
 		command(true);
 
-		m_vk.cmdBindPipeline(*m_cmdBuffer, vk::VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline.getPipeline());
+		m_pipeline.bind(*m_cmdBuffer);
 
 		const vk::VkDeviceSize vertexBufferOffset	= 0;
 		const vk::VkBuffer		vertexBuffer		= m_vertexBuffer->object();
@@ -128,7 +129,7 @@ public:
 
 		m_vk.cmdDraw(*m_cmdBuffer, 2, 1, 0, 0);
 
-		endRenderPass(m_vk, *m_cmdBuffer);
+		m_renderPass.end(m_vk, *m_cmdBuffer);
 		endCommandBuffer(m_vk, *m_cmdBuffer);
 
 		submitCommandsAndWait(m_vk, device, queue, m_cmdBuffer.get());
@@ -403,7 +404,7 @@ public:
 } //anonymous
 
 DynamicStateClearTests::DynamicStateClearTests (tcu::TestContext& testCtx, vk::PipelineConstructionType pipelineConstructionType)
-	: TestCaseGroup					(testCtx, "image", "Tests for dynamic state")
+	: TestCaseGroup					(testCtx, "image")
 	, m_pipelineConstructionType	(pipelineConstructionType)
 {
 	/* Left blank on purpose */
@@ -419,10 +420,14 @@ void DynamicStateClearTests::init (void)
 	shaderPaths[glu::SHADERTYPE_VERTEX] = "vulkan/dynamic_state/VertexFetch.vert";
 	shaderPaths[glu::SHADERTYPE_FRAGMENT] = "vulkan/dynamic_state/VertexFetch.frag";
 
-	addChild(new InstanceFactory<ClearTestInstance>(m_testCtx, "clear", "Clear attachment after setting dynamic states", m_pipelineConstructionType, shaderPaths));
-	addChild(new InstanceFactory<BlitTestInstance>(m_testCtx, "blit", "Blit image after setting dynamic states", m_pipelineConstructionType, shaderPaths));
-	addChild(new InstanceFactory<CopyTestInstance>(m_testCtx, "copy", "Copy image after setting dynamic states", m_pipelineConstructionType, shaderPaths));
-	addChild(new InstanceFactory<ResolveTestInstance>(m_testCtx, "resolve", "Resolve image after setting dynamic states", m_pipelineConstructionType, shaderPaths));
+	// Clear attachment after setting dynamic states
+	addChild(new InstanceFactory<ClearTestInstance>(m_testCtx, "clear", m_pipelineConstructionType, shaderPaths));
+	// Blit image after setting dynamic states
+	addChild(new InstanceFactory<BlitTestInstance>(m_testCtx, "blit", m_pipelineConstructionType, shaderPaths));
+	// Copy image after setting dynamic states
+	addChild(new InstanceFactory<CopyTestInstance>(m_testCtx, "copy", m_pipelineConstructionType, shaderPaths));
+	// Resolve image after setting dynamic states
+	addChild(new InstanceFactory<ResolveTestInstance>(m_testCtx, "resolve", m_pipelineConstructionType, shaderPaths));
 }
 
 } // DynamicState

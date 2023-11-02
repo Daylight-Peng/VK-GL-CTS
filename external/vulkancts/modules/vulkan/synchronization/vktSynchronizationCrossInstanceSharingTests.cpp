@@ -114,9 +114,6 @@ public:
 		if (config.semaphoreType == vk::VK_SEMAPHORE_TYPE_TIMELINE)
 			m_context.requireDeviceFunctionality("VK_KHR_timeline_semaphore");
 
-		if (config.memoryHandleType == vk::VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT
-			|| config.semaphoreHandleType == vk::VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT
-			|| config.semaphoreHandleType == vk::VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT)
 		if (config.type == SynchronizationType::SYNCHRONIZATION2)
 			m_context.requireDeviceFunctionality("VK_KHR_synchronization2");
 
@@ -1021,7 +1018,7 @@ SharingTestInstance::SharingTestInstance (Context&		context,
 	, m_queueFamiliesA			(vk::getPhysicalDeviceQueueFamilyProperties(m_vkiA, m_physicalDeviceA))
 	, m_queueFamilyIndicesA		(getFamilyIndices(m_queueFamiliesA))
 	, m_deviceA					(InstanceAndDevice::getDeviceA())
-	, m_vkdA					(context.getPlatformInterface(), m_instanceA, *m_deviceA)
+	, m_vkdA					(context.getPlatformInterface(), m_instanceA, *m_deviceA, context.getUsedApiVersion())
 
 	, m_instanceB				(InstanceAndDevice::getInstanceB(context))
 	, m_vkiB					(InstanceAndDevice::getDriverB())
@@ -1029,7 +1026,7 @@ SharingTestInstance::SharingTestInstance (Context&		context,
 	, m_queueFamiliesB			(vk::getPhysicalDeviceQueueFamilyProperties(m_vkiB, m_physicalDeviceB))
 	, m_queueFamilyIndicesB		(getFamilyIndices(m_queueFamiliesB))
 	, m_deviceB					(InstanceAndDevice::getDeviceB())
-	, m_vkdB					(context.getPlatformInterface(), m_instanceB, *m_deviceB)
+	, m_vkdB					(context.getPlatformInterface(), m_instanceB, *m_deviceB, context.getUsedApiVersion())
 
 	, m_semaphoreHandleType		(m_config.semaphoreHandleType)
 	, m_memoryHandleType		(m_config.memoryHandleType)
@@ -1381,7 +1378,7 @@ static void createTests (tcu::TestCaseGroup* group, SynchronizationType type)
 	for (size_t dedicatedNdx = 0; dedicatedNdx < 2; dedicatedNdx++)
 	{
 		const bool						dedicated		(dedicatedNdx == 1);
-		de::MovePtr<tcu::TestCaseGroup>	dedicatedGroup	(new tcu::TestCaseGroup(testCtx, dedicated ? "dedicated" : "suballocated", ""));
+		de::MovePtr<tcu::TestCaseGroup>	dedicatedGroup	(new tcu::TestCaseGroup(testCtx, dedicated ? "dedicated" : "suballocated"));
 
 		for (size_t writeOpNdx = 0; writeOpNdx < DE_LENGTH_OF_ARRAY(s_writeOps); ++writeOpNdx)
 		for (size_t readOpNdx = 0; readOpNdx < DE_LENGTH_OF_ARRAY(s_readOps); ++readOpNdx)
@@ -1391,7 +1388,7 @@ static void createTests (tcu::TestCaseGroup* group, SynchronizationType type)
 			const std::string	opGroupName	= getOperationName(writeOp) + "_" + getOperationName(readOp);
 			bool				empty		= true;
 
-			de::MovePtr<tcu::TestCaseGroup> opGroup	(new tcu::TestCaseGroup(testCtx, opGroupName.c_str(), ""));
+			de::MovePtr<tcu::TestCaseGroup> opGroup	(new tcu::TestCaseGroup(testCtx, opGroupName.c_str()));
 
 			for (size_t resourceNdx = 0; resourceNdx < DE_LENGTH_OF_ARRAY(s_resources); ++resourceNdx)
 			{
@@ -1412,7 +1409,7 @@ static void createTests (tcu::TestCaseGroup* group, SynchronizationType type)
 							const TestConfig	config (type, resource, (vk::VkSemaphoreType)semaphoreType, writeOp, readOp, cases[caseNdx].memoryType, cases[caseNdx].semaphoreType, dedicated);
 							std::string			name	= getResourceName(resource) + semaphoreNames[semaphoreType] + cases[caseNdx].nameSuffix;
 
-							opGroup->addChild(new InstanceFactory1<SharingTestInstance, TestConfig, Progs>(testCtx, tcu::NODETYPE_SELF_VALIDATE,  name, "", Progs(), config));
+							opGroup->addChild(new InstanceFactory1<SharingTestInstance, TestConfig, Progs>(testCtx, name, Progs(), config));
 							empty = false;
 						}
 					}
@@ -1437,7 +1434,7 @@ static void cleanupGroup (tcu::TestCaseGroup* group, SynchronizationType type)
 
 tcu::TestCaseGroup* createCrossInstanceSharingTest (tcu::TestContext& testCtx, SynchronizationType type)
 {
-	return createTestGroup(testCtx, "cross_instance", "", createTests, type, cleanupGroup);
+	return createTestGroup(testCtx, "cross_instance", createTests, type, cleanupGroup);
 }
 
 } // synchronization

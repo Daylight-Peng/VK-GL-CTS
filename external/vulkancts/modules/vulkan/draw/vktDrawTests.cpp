@@ -46,10 +46,12 @@
 #include "vktDrawExplicitVertexParameterTests.hpp"
 #include "vktDrawDepthClampTests.hpp"
 #include "vktDrawMultipleClearsWithinRenderPass.hpp"
+#include "vktDrawSampleAttributeTests.hpp"
 #ifndef CTS_USES_VULKANSC
 #include "vktDrawOutputLocationTests.hpp"
 #include "vktDrawDepthBiasTests.hpp"
 #include "vktDrawAhbTests.hpp"
+#include "vktDrawAhbExternalFormatResolveTests.hpp"
 #include "vktDrawMultiExtTests.hpp"
 #endif // CTS_USES_VULKANSC
 
@@ -84,6 +86,7 @@ void createChildren (tcu::TestContext& testCtx, tcu::TestCaseGroup* group, const
 	group->addChild(createExplicitVertexParameterTests			(testCtx, groupParams));
 	group->addChild(createDepthClampTests						(testCtx, groupParams));
 	group->addChild(new MultipleClearsWithinRenderPassTests		(testCtx, groupParams));
+	group->addChild(createSampleAttributeTests					(testCtx, groupParams));
 	// NOTE: all new draw tests should handle SharedGroupParams
 
 #ifndef CTS_USES_VULKANSC
@@ -99,15 +102,17 @@ void createChildren (tcu::TestContext& testCtx, tcu::TestCaseGroup* group, const
 		// subpasses can't be translated to dynamic rendering
 		group->addChild(createAhbTests						(testCtx));
 	}
+	group->addChild(createAhbExternalFormatResolveTests	(testCtx, groupParams));
 #endif // CTS_USES_VULKANSC
 }
 
 } // anonymous
 
-tcu::TestCaseGroup* createTests (tcu::TestContext& testCtx)
+tcu::TestCaseGroup* createTests (tcu::TestContext& testCtx, const std::string& name)
 {
-	de::MovePtr<tcu::TestCaseGroup> mainGroup						(new tcu::TestCaseGroup(testCtx, "draw", "Simple Draw tests"));
-	de::MovePtr<tcu::TestCaseGroup> renderpassGroup					(new tcu::TestCaseGroup(testCtx, "renderpass", "Draw using renderpass object"));
+	de::MovePtr<tcu::TestCaseGroup> mainGroup						(new tcu::TestCaseGroup(testCtx, name.c_str(), "Simple Draw tests"));
+	// Draw using renderpass object
+	de::MovePtr<tcu::TestCaseGroup> renderpassGroup					(new tcu::TestCaseGroup(testCtx, "renderpass"));
 
 	createChildren(testCtx, renderpassGroup.get(), SharedGroupParams(
 		new GroupParams
@@ -119,7 +124,8 @@ tcu::TestCaseGroup* createTests (tcu::TestContext& testCtx)
 	mainGroup->addChild(renderpassGroup.release());
 
 #ifndef CTS_USES_VULKANSC
-	de::MovePtr<tcu::TestCaseGroup> dynamicRenderingGroup			(new tcu::TestCaseGroup(testCtx, "dynamic_rendering", "Draw using VK_KHR_dynamic_rendering"));
+	// Draw using VK_KHR_dynamic_rendering
+	de::MovePtr<tcu::TestCaseGroup> dynamicRenderingGroup			(new tcu::TestCaseGroup(testCtx, "dynamic_rendering"));
 	de::MovePtr<tcu::TestCaseGroup> drPrimaryCmdBuffGroup			(new tcu::TestCaseGroup(testCtx, "primary_cmd_buff", ""));
 	de::MovePtr<tcu::TestCaseGroup> drPartialSecondaryCmdBuffGroup	(new tcu::TestCaseGroup(testCtx, "partial_secondary_cmd_buff", "Secondary command buffer doesn't include begin/endRendering"));
 	de::MovePtr<tcu::TestCaseGroup> drCompleteSecondaryCmdBuffGroup	(new tcu::TestCaseGroup(testCtx, "complete_secondary_cmd_buff", "Secondary command buffer contains completely dynamic renderpass"));

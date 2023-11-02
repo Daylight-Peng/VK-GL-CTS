@@ -79,8 +79,23 @@ enum TestMode
 	TM_SETUP_RATE_WITH_LINEAR_TILED_IMAGE,
 
 	TM_TWO_SUBPASS,
-	TM_MEMORY_ACCESS
+	TM_MEMORY_ACCESS,
+	TM_MAINTENANCE_5
 };
+
+struct DepthStencilParams
+{
+	const VkFormat		format;
+	const VkImageLayout	layout;
+
+	DepthStencilParams (VkFormat format_, VkImageLayout layout_)
+		: format(format_), layout(layout_)
+	{
+		DE_ASSERT(format != VK_FORMAT_UNDEFINED);
+	}
+};
+
+using OptDSParams = tcu::Maybe<DepthStencilParams>;
 
 struct TestParams
 {
@@ -92,7 +107,52 @@ struct TestParams
 	bool			useDynamicRendering;
 	bool			useImagelessFramebuffer;
 	bool			useNullShadingRateImage;
+	OptDSParams		dsParams;
+
+	bool useDepthStencil (void) const
+	{
+		return (hasDSParams() && dsParams->format != VK_FORMAT_UNDEFINED);
+	}
+
+	// Returns depth/stencil format, or VK_FORMAT_UNDEFINED if not present.
+	VkFormat getDSFormat (void) const
+	{
+		return (hasDSParams() ? dsParams->format : VK_FORMAT_UNDEFINED);
+	}
+
+	// Returns depth/stencil layout, or VK_IMAGE_LAYOUT_UNDEFINED if not present.
+	VkImageLayout getDSLayout (void) const
+	{
+		return (hasDSParams() ? dsParams->layout : VK_IMAGE_LAYOUT_UNDEFINED);
+	}
+
+private:
+	inline bool hasDSParams (void) const
+	{
+		return static_cast<bool>(dsParams);
+	}
 };
+
+constexpr VkImageUsageFlags kDSUsage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
+VkImageAspectFlags getFormatAspectFlags (const VkFormat format)
+{
+	if (format == VK_FORMAT_UNDEFINED)
+		return 0u;
+
+	const auto order = mapVkFormat(format).order;
+
+	switch (order)
+	{
+		case tcu::TextureFormat::DS:	return (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+		case tcu::TextureFormat::D:		return VK_IMAGE_ASPECT_DEPTH_BIT;
+		case tcu::TextureFormat::S:		return VK_IMAGE_ASPECT_STENCIL_BIT;
+		default:						return VK_IMAGE_ASPECT_COLOR_BIT;
+	}
+
+	DE_ASSERT(false);
+	return 0u;
+}
 
 deUint32 calculateRate(deUint32 rateWidth, deUint32 rateHeight)
 {
@@ -180,6 +240,7 @@ private:
 	Move<VkRenderPass>				buildRenderPass				(VkDevice								device,
 																 const DeviceInterface&					vk,
 																 VkFormat								cbFormat,
+																 VkFormat								dsFormat,
 																 deUint32								sr1TileWidth = 0,
 																 deUint32								sr1TileHeight = 0,
 																 deUint32								sr2TileWidth = 0,
@@ -196,6 +257,7 @@ private:
 																 deUint32								subpass,
 																 VkRenderPass							renderPass,
 																 VkFormat								cbFormat,
+																 VkFormat								dsFormat,
 																 VkPipelineLayout						layout,
 																 VkShaderModule							vertShader,
 																 VkShaderModule							fragShader,
@@ -249,12 +311,16 @@ private:
 	// structures commonly used by most of tests
 	const VkImageSubresourceLayers	m_defaultImageSubresourceLayers;
 	const VkImageSubresourceRange	m_defaultImageSubresourceRange;
+	const VkImageSubresourceRange	m_dsImageSubresourceRange;
 	const VkBufferImageCopy			m_defaultBufferImageCopy;
 
 	// objects commonly used by most of tests
 	de::MovePtr<ImageWithMemory>	m_cbImage[2];
 	Move<VkImageView>				m_cbImageView[2];
 	de::MovePtr<BufferWithMemory>	m_cbReadBuffer[2];
+
+	de::MovePtr<ImageWithMemory>	m_dsImage;
+	Move<VkImageView>				m_dsImageView;
 
 	de::MovePtr<ImageWithMemory>	m_srImage[2];
 	Move<VkImageView>				m_srImageView[2];
@@ -280,6 +346,7 @@ AttachmentRateInstance::AttachmentRateInstance(Context& context, const de::Share
 	, m_srUsage							(VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR | VK_IMAGE_USAGE_TRANSFER_DST_BIT)
 	, m_defaultImageSubresourceLayers	(makeImageSubresourceLayers(VK_IMAGE_ASPECT_COLOR_BIT, 0u, 0u, 1u))
 	, m_defaultImageSubresourceRange	(makeImageSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 0, 1u))
+	, m_dsImageSubresourceRange			(makeImageSubresourceRange(getFormatAspectFlags(m_params->getDSFormat()), 0u, 1u, 0, 1u))
 	, m_defaultBufferImageCopy			(makeBufferImageCopy({ m_cbWidth, m_cbHeight, 1u }, m_defaultImageSubresourceLayers))
 {
 	// prepare data needed to calculate tile sizes
@@ -337,7 +404,8 @@ de::MovePtr<BufferWithMemory> AttachmentRateInstance::buildBufferWithMemory(VkDe
 
 Move<VkImageView> AttachmentRateInstance::buildImageView (VkDevice device, const DeviceInterface& vk, VkFormat format, VkImage image)
 {
-	VkImageSubresourceRange	subresourceRange	= makeImageSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 0u, 1u);
+	const auto aspect			= getFormatAspectFlags(format);
+	const auto subresourceRange	= makeImageSubresourceRange(aspect, 0u, 1u, 0u, 1u);
 
 	return makeImageView(vk, device, image, VK_IMAGE_VIEW_TYPE_2D, format, subresourceRange);
 };
@@ -349,6 +417,13 @@ void AttachmentRateInstance::buildColorBufferObjects (VkDevice device, const Dev
 	m_cbImage[cbIndex]			= buildImageWithMemory(device, vk, allocator, m_cbFormat, m_cbWidth, m_cbHeight, cbUsage);
 	m_cbImageView[cbIndex]		= buildImageView(device, vk, m_cbFormat, m_cbImage[cbIndex]->get());
 	m_cbReadBuffer[cbIndex]		= buildBufferWithMemory(device, vk, allocator, m_cbWidth * m_cbHeight * deUint32(sizeof(int)) * 4u, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+
+	if (m_params->useDepthStencil() && m_dsImage.get() == nullptr)
+	{
+		const auto dsFormat		= m_params->getDSFormat();
+		m_dsImage				= buildImageWithMemory(device, vk, allocator, dsFormat, m_cbWidth, m_cbHeight, kDSUsage);
+		m_dsImageView			= buildImageView(device, vk, dsFormat, m_dsImage->get());
+	}
 }
 
 void AttachmentRateInstance::buildShadingRateObjects (VkDevice device, const DeviceInterface& vk, vk::Allocator& allocator, deUint32 srIndex, deUint32 width, deUint32 height, VkImageUsageFlags srUsage, VkImageTiling srTiling)
@@ -386,9 +461,10 @@ void AttachmentRateInstance::buildCounterBufferObjects (VkDevice device, const v
 	flushAlloc(vk, device, m_counterBuffer->getAllocation());
 }
 
-Move<VkRenderPass> AttachmentRateInstance::buildRenderPass (VkDevice device, const vk::DeviceInterface& vk, VkFormat cbFormat,
-														   deUint32 sr0TileWidth, deUint32 sr0TileHeight,
-														   deUint32 sr1TileWidth, deUint32 sr1TileHeight) const
+Move<VkRenderPass> AttachmentRateInstance::buildRenderPass (VkDevice device, const vk::DeviceInterface& vk,
+															VkFormat cbFormat, VkFormat dsFormat,
+															deUint32 sr0TileWidth, deUint32 sr0TileHeight,
+															deUint32 sr1TileWidth, deUint32 sr1TileHeight) const
 {
 	if (m_params->useDynamicRendering)
 		return Move<VkRenderPass>();
@@ -478,19 +554,59 @@ Move<VkRenderPass> AttachmentRateInstance::buildRenderPass (VkDevice device, con
 		attachmentDescriptions[3].initialLayout = VK_IMAGE_LAYOUT_FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR;
 	}
 
+	std::vector<VkAttachmentReference2> dsAttachmentReferences;
+
+	if (dsFormat != VK_FORMAT_UNDEFINED)
+	{
+		const auto dsLayout			= m_params->getDSLayout();
+		const auto dsAspects		= getFormatAspectFlags(dsFormat);
+		const auto hasDepth			= ((dsAspects & VK_IMAGE_ASPECT_DEPTH_BIT) != 0);
+		const auto hasStencil		= ((dsAspects & VK_IMAGE_ASPECT_STENCIL_BIT) != 0);
+		const auto depthLoadOp		= (hasDepth ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE);
+		const auto depthStoreOp		= (hasDepth ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE);
+		const auto stencilLoadOp	= (hasStencil ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE);
+		const auto stencilStoreOp	= (hasStencil ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE);
+
+		++attachmentCount;
+		attachmentDescriptions.push_back(VkAttachmentDescription2{
+			VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2,		// VkStructureType					sType;
+			nullptr,										// const void*						pNext;
+			0u,												// VkAttachmentDescriptionFlags		flags;
+			dsFormat,										// VkFormat							format;
+			VK_SAMPLE_COUNT_1_BIT,							// VkSampleCountFlagBits			samples;
+			depthLoadOp,									// VkAttachmentLoadOp				loadOp;
+			depthStoreOp,									// VkAttachmentStoreOp				storeOp;
+			stencilLoadOp,									// VkAttachmentLoadOp				stencilLoadOp;
+			stencilStoreOp,									// VkAttachmentStoreOp				stencilStoreOp;
+			dsLayout,										// VkImageLayout					initialLayout;
+			dsLayout,										// VkImageLayout					finalLayout;
+		});
+
+		dsAttachmentReferences.push_back(VkAttachmentReference2{
+			VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2,	// VkStructureType					sType;
+			nullptr,									// const void*						pNext;
+			attachmentCount - 1u,						// uint32_t							attachment;
+			dsLayout,									// VkImageLayout					layout;
+			0u,											// VkImageAspectFlags				aspectMask;
+		});
+
+		for (auto& desc : subpassDescriptions)
+			desc.pDepthStencilAttachment = &dsAttachmentReferences.back();
+	}
+
 	const VkRenderPassCreateInfo2 renderPassParams
 	{
 		VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2,						// VkStructureType					sType;
-		DE_NULL,															// const void*						pNext;
+		nullptr,															// const void*						pNext;
 		(vk::VkRenderPassCreateFlags)0,										// VkRenderPassCreateFlags			flags;
 		attachmentCount,													// uint32_t							attachmentCount;
 		attachmentDescriptions.data(),										// const VkAttachmentDescription2*	pAttachments;
 		subpassCount,														// uint32_t							subpassCount;
 		subpassDescriptions.data(),											// const VkSubpassDescription2*		pSubpasses;
 		0u,																	// uint32_t							dependencyCount;
-		DE_NULL,															// const VkSubpassDependency2*		pDependencies;
+		nullptr,															// const VkSubpassDependency2*		pDependencies;
 		0u,																	// uint32_t							correlatedViewMaskCount;
-		DE_NULL,															// const uint32_t*					pCorrelatedViewMasks;
+		nullptr,															// const uint32_t*					pCorrelatedViewMasks;
 	};
 
 	return createRenderPass2(vk, device, &renderPassParams);
@@ -581,9 +697,16 @@ Move<VkPipelineLayout> AttachmentRateInstance::buildPipelineLayout (VkDevice dev
 	return createPipelineLayout(vk, device, &pipelineLayoutCreateInfo, NULL);
 }
 
-Move<VkPipeline> AttachmentRateInstance::buildGraphicsPipeline (VkDevice device, const vk::DeviceInterface& vk, deUint32 subpass, VkRenderPass renderPass, VkFormat cbFormat, VkPipelineLayout pipelineLayout,
-															   VkShaderModule vertShader, VkShaderModule fragShader, bool useShadingRate) const
+Move<VkPipeline> AttachmentRateInstance::buildGraphicsPipeline (VkDevice device, const vk::DeviceInterface& vk, deUint32 subpass, VkRenderPass renderPass,
+																VkFormat cbFormat, VkFormat dsFormat, VkPipelineLayout pipelineLayout,
+																VkShaderModule vertShader, VkShaderModule fragShader, bool useShadingRate) const
 {
+	const auto dsAspects		= getFormatAspectFlags(dsFormat);
+	const auto hasDepth			= ((dsAspects & VK_IMAGE_ASPECT_DEPTH_BIT) != 0);
+	const auto hasStencil		= ((dsAspects & VK_IMAGE_ASPECT_STENCIL_BIT) != 0);
+	const auto depthCompareOp	= (hasDepth ? VK_COMPARE_OP_ALWAYS : VK_COMPARE_OP_LESS_OR_EQUAL);
+	const auto stencilCompareOp	= (hasStencil ? VK_COMPARE_OP_ALWAYS : VK_COMPARE_OP_NEVER);
+
 	std::vector<VkPipelineShaderStageCreateInfo> pipelineShaderStageParams(2,
 	{
 		VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,			// VkStructureType								sType
@@ -668,7 +791,7 @@ Move<VkPipeline> AttachmentRateInstance::buildGraphicsPipeline (VkDevice device,
 		VK_STENCIL_OP_KEEP,												// VkStencilOp									failOp
 		VK_STENCIL_OP_KEEP,												// VkStencilOp									passOp
 		VK_STENCIL_OP_KEEP,												// VkStencilOp									depthFailOp
-		VK_COMPARE_OP_NEVER,											// VkCompareOp									compareOp
+		stencilCompareOp,												// VkCompareOp									compareOp
 		0,																// deUint32										compareMask
 		0,																// deUint32										writeMask
 		0																// deUint32										reference
@@ -679,11 +802,11 @@ Move<VkPipeline> AttachmentRateInstance::buildGraphicsPipeline (VkDevice device,
 		VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,		// VkStructureType								sType
 		DE_NULL,														// const void*									pNext
 		0u,																// VkPipelineDepthStencilStateCreateFlags		flags
-		VK_FALSE,														// VkBool32										depthTestEnable
+		hasDepth,														// VkBool32										depthTestEnable
 		VK_FALSE,														// VkBool32										depthWriteEnable
-		VK_COMPARE_OP_LESS_OR_EQUAL,									// VkCompareOp									depthCompareOp
+		depthCompareOp,													// VkCompareOp									depthCompareOp
 		VK_FALSE,														// VkBool32										depthBoundsTestEnable
-		VK_FALSE,														// VkBool32										stencilTestEnable
+		hasStencil,														// VkBool32										stencilTestEnable
 		stencilOpState,													// VkStencilOpState								front
 		stencilOpState,													// VkStencilOpState								back
 		0.0f,															// float										minDepthBounds
@@ -744,7 +867,7 @@ Move<VkPipeline> AttachmentRateInstance::buildGraphicsPipeline (VkDevice device,
 		0u,
 		1u,
 		&cbFormat,
-		VK_FORMAT_UNDEFINED,
+		dsFormat,
 		VK_FORMAT_UNDEFINED
 	};
 
@@ -778,8 +901,17 @@ Move<VkPipeline> AttachmentRateInstance::buildGraphicsPipeline (VkDevice device,
 	};
 
 #ifndef CTS_USES_VULKANSC
+	VkPipelineCreateFlags2CreateInfoKHR pipelineFlags2CreateInfo = initVulkanStructure(pNext);
 	if (useShadingRate && m_params->useDynamicRendering)
-		pipelineCreateInfo.flags |= VK_PIPELINE_CREATE_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
+	{
+		if (m_params->mode == TM_MAINTENANCE_5)
+		{
+			pipelineFlags2CreateInfo.flags = VK_PIPELINE_CREATE_2_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
+			pipelineCreateInfo.pNext = &pipelineFlags2CreateInfo;
+		}
+		else
+			pipelineCreateInfo.flags |= VK_PIPELINE_CREATE_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
+	}
 #endif // CTS_USES_VULKANSC
 
 	return createGraphicsPipeline(vk, device, DE_NULL, &pipelineCreateInfo);
@@ -951,6 +1083,7 @@ tcu::TestStatus AttachmentRateInstance::iterate(void)
 		{ TM_SETUP_RATE_WITH_LINEAR_TILED_IMAGE,								&AttachmentRateInstance::runFillLinearTiledImage },
 		{ TM_TWO_SUBPASS,														&AttachmentRateInstance::runTwoSubpassMode },
 		{ TM_MEMORY_ACCESS,														&AttachmentRateInstance::runFragmentShaderMode },
+		{ TM_MAINTENANCE_5,														&AttachmentRateInstance::runFragmentShaderMode },
 	};
 
 	if ((this->*modeFuncMap.at(m_params->mode))())
@@ -979,8 +1112,11 @@ bool AttachmentRateInstance::verifyUsingAtomicChecks(deUint32 tileWidth, deUint3
 	deUint32 triangleTopEdgeY	= 0;
 
 	// this method assumes that greatest angle in the triangle points to the top-left corner of FB;
-	// this vector will then store fragments on the right edge of triangle; vector index represents y coordinate and value is x
+	// these vectors will then store fragments on the right and bottom edges of triangle respectively;
+	// for the right edge vector, the index represents y coordinate and value is x;
+	// for the bottom edge vector, the index represents x coordinate and value is y
 	std::vector<deUint32> fragmentsOnTheRightTriangleEdgeVect(m_cbHeight, 0);
+	std::vector<deUint32> fragmentsOnTheBottomTriangleEdgeVect(m_cbWidth, 0);
 
 	tcu::clear(errorMaskAccess, tcu::Vec4(0.0f, 0.0f, 0.0f, 1.0));
 
@@ -1003,6 +1139,9 @@ bool AttachmentRateInstance::verifyUsingAtomicChecks(deUint32 tileWidth, deUint3
 
 		// constantly overwrite coordinate on right edge so that we are left with the farthest one
 		fragmentsOnTheRightTriangleEdgeVect[cbFragmentY] = cbFragmentX;
+
+		// constantly overwrite coordinate on bottom edge so that we are left with the farthest one
+		fragmentsOnTheBottomTriangleEdgeVect[cbFragmentX] = cbFragmentY;
 
 		// make sure that fragment g and a components are 0
 		if ((fragmentColor[1] != 0) || (fragmentColor[3] != 0))
@@ -1085,12 +1224,14 @@ bool AttachmentRateInstance::verifyUsingAtomicChecks(deUint32 tileWidth, deUint3
 		{
 			const auto&	topLeftFragment		= fragmentSet[0];
 			deUint32	triangleRightEdgeX	= fragmentsOnTheRightTriangleEdgeVect[topLeftFragment.y()];
+			deUint32	triangleBottomEdgeY	= fragmentsOnTheBottomTriangleEdgeVect[topLeftFragment.x()];
 
 			// we can only count this as an error if set is fully inside of triangle, sets on
 			// edges may not have same number of fragments as sets fully located in the triangle
 			if ((topLeftFragment.y() > (triangleTopEdgeY)) &&
 				(topLeftFragment.x() > (triangleLeftEdgeX)) &&
-				(topLeftFragment.x() < (triangleRightEdgeX - rateWidth)))
+				(topLeftFragment.x() < (triangleRightEdgeX - rateWidth)) &&
+				(topLeftFragment.y() < (triangleBottomEdgeY - rateHeight)))
 			{
 				wrongFragments += (deUint32)fragmentSet.size();
 				fragmentColor	= tcu::Vec4(1.0f, 0.0f, 0.0f, 1.0f);
@@ -1167,17 +1308,22 @@ bool AttachmentRateInstance::runComputeShaderMode(void)
 			.writeSingle(*computeDescriptorSet,  DescriptorSetUpdateBuilder::Location::binding(0u), VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,  &computeDescriptorInfo)
 			.update(vk, device);
 
+		const auto				dsFormat				= m_params->getDSFormat();
 		Move<VkPipelineLayout>	computePipelineLayout	= buildPipelineLayout(device, vk, &(*computeDescriptorSetLayout));
 		Move<VkPipelineLayout>	graphicsPipelineLayout	= buildPipelineLayout(device, vk, &(*m_counterBufferDescriptorSetLayout));
 		Move<VkPipeline>		computePipeline			= buildComputePipeline(device, vk, *compShader, *computePipelineLayout);
-		Move<VkRenderPass>		renderPass				= buildRenderPass(device, vk, m_cbFormat, tileWidth, tileHeight);
-		Move<VkPipeline>		graphicsPipeline		= buildGraphicsPipeline(device, vk, 0, *renderPass, m_cbFormat, *graphicsPipelineLayout, *vertShader, *fragShader);
+		Move<VkRenderPass>		renderPass				= buildRenderPass(device, vk, m_cbFormat, dsFormat, tileWidth, tileHeight);
+		Move<VkPipeline>		graphicsPipeline		= buildGraphicsPipeline(device, vk, 0, *renderPass, m_cbFormat, dsFormat, *graphicsPipelineLayout, *vertShader, *fragShader);
 
 		std::vector<FBAttachmentInfo> attachmentInfo
 		{
 			{ m_cbFormat,			m_cbUsage, m_cbWidth, m_cbHeight, *m_cbImageView[0] },
-			{ m_params->srFormat,	m_srUsage, srWidth,   srHeight,   *m_srImageView[0] }
+			{ m_params->srFormat,	m_srUsage, srWidth,   srHeight,   *m_srImageView[0] },
 		};
+		// This would need an additional attachment with m_dsImageView and a barrier to transition the DS layout.
+		// See runFragmentShaderMode for more details.
+		DE_ASSERT(!m_params->useDepthStencil());
+
 		Move<VkFramebuffer> framebuffer = buildFramebuffer(device, vk, *renderPass, attachmentInfo);
 
 		beginCommandBuffer(vk, *cmdBuffer, 0u);
@@ -1303,12 +1449,13 @@ bool AttachmentRateInstance::runFragmentShaderMode(void)
 
 		buildShadingRateObjects(device, vk, m_context.getDefaultAllocator(), 0, srWidth, srHeight, m_srUsage);
 
+		const auto				dsFormat			= m_params->getDSFormat();
 		Move<VkPipelineLayout>	setupPipelineLayout	= buildPipelineLayout(device, vk);
 		Move<VkPipelineLayout>	ratePipelineLayout	= buildPipelineLayout(device, vk, &(*m_counterBufferDescriptorSetLayout));
-		Move<VkRenderPass>		setupRenderPass		= buildRenderPass(device, vk, m_params->srFormat);
-		Move<VkRenderPass>		rateRenderPass		= buildRenderPass(device, vk, m_cbFormat, tileWidth, tileHeight);
-		Move<VkPipeline>		setupPipeline		= buildGraphicsPipeline(device, vk, 0, *setupRenderPass, m_params->srFormat, *setupPipelineLayout, *vertSetupShader, *fragSetupShader, DE_FALSE);
-		Move<VkPipeline>		ratePipeline		= buildGraphicsPipeline(device, vk, 0, *rateRenderPass, m_cbFormat, *ratePipelineLayout, *vertShader, *fragShader);
+		Move<VkRenderPass>		setupRenderPass		= buildRenderPass(device, vk, m_params->srFormat, VK_FORMAT_UNDEFINED);
+		Move<VkRenderPass>		rateRenderPass		= buildRenderPass(device, vk, m_cbFormat, dsFormat, tileWidth, tileHeight);
+		Move<VkPipeline>		setupPipeline		= buildGraphicsPipeline(device, vk, 0, *setupRenderPass, m_params->srFormat, VK_FORMAT_UNDEFINED, *setupPipelineLayout, *vertSetupShader, *fragSetupShader, DE_FALSE);
+		Move<VkPipeline>		ratePipeline		= buildGraphicsPipeline(device, vk, 0, *rateRenderPass, m_cbFormat, dsFormat, *ratePipelineLayout, *vertShader, *fragShader);
 
 		std::vector<FBAttachmentInfo> setupAttachmentInfo
 		{
@@ -1317,8 +1464,11 @@ bool AttachmentRateInstance::runFragmentShaderMode(void)
 		std::vector<FBAttachmentInfo> rateAttachmentInfo
 		{
 			{ m_cbFormat,			m_cbUsage, m_cbWidth, m_cbHeight, *m_cbImageView[0] },
-			{ m_params->srFormat,	m_srUsage, srWidth,   srHeight,   *m_srImageView[0] }
+			{ m_params->srFormat,	m_srUsage, srWidth,   srHeight,   *m_srImageView[0] },
 		};
+		if (m_params->useDepthStencil())
+			rateAttachmentInfo.push_back(FBAttachmentInfo{ dsFormat, kDSUsage, m_cbWidth, m_cbHeight, *m_dsImageView });
+
 		Move<VkFramebuffer> setupFramebuffer	= buildFramebuffer(device, vk, *setupRenderPass, setupAttachmentInfo);
 		Move<VkFramebuffer> rateFramebuffer		= buildFramebuffer(device, vk, *rateRenderPass, rateAttachmentInfo);
 
@@ -1336,6 +1486,21 @@ bool AttachmentRateInstance::runFragmentShaderMode(void)
 				**m_srImage[0],
 				m_defaultImageSubresourceRange);
 		vk.cmdPipelineBarrier(*cmdBuffer, srcStageMask, dstStageMask, 0, 0, DE_NULL, 0, DE_NULL, 1, &srImageBarrierGeneral);
+
+		if (m_params->useDepthStencil())
+		{
+			const VkPipelineStageFlags srcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+			const VkPipelineStageFlags dstStage = (VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT);
+			VkImageMemoryBarrier depthImageReadOnlyBarrier =
+				makeImageMemoryBarrier(
+					VK_ACCESS_NONE_KHR,
+					VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+					VK_IMAGE_LAYOUT_UNDEFINED,
+					m_params->getDSLayout(),
+					**m_dsImage,
+					m_dsImageSubresourceRange);
+			vk.cmdPipelineBarrier(*cmdBuffer, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &depthImageReadOnlyBarrier);
+		}
 
 		// render rate to sr image
 		startRendering(*cmdBuffer, *setupRenderPass, *setupFramebuffer, makeRect2D(srWidth, srHeight), setupAttachmentInfo);
@@ -1445,26 +1610,31 @@ bool AttachmentRateInstance::runCopyMode (void)
 		// create image that will be source for shading rate image
 		de::MovePtr<ImageWithMemory> srSrcImage = buildImageWithMemory(device, vk, m_context.getDefaultAllocator(), m_params->srFormat, srWidth, srHeight, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
 
+		const auto				dsFormat				= m_params->getDSFormat();
 		Move<VkPipelineLayout>	graphicsPipelineLayout	= buildPipelineLayout(device, vk, &(*m_counterBufferDescriptorSetLayout));
-		Move<VkRenderPass>		renderPass				= buildRenderPass(device, vk, m_cbFormat, tileWidth, tileHeight);
-		Move<VkPipeline>		graphicsPipeline		= buildGraphicsPipeline(device, vk, 0, *renderPass, m_cbFormat, *graphicsPipelineLayout, *vertShader, *fragShader);
+		Move<VkRenderPass>		renderPass				= buildRenderPass(device, vk, m_cbFormat, dsFormat, tileWidth, tileHeight);
+		Move<VkPipeline>		graphicsPipeline		= buildGraphicsPipeline(device, vk, 0, *renderPass, m_cbFormat, dsFormat, *graphicsPipelineLayout, *vertShader, *fragShader);
 
 		std::vector<FBAttachmentInfo> attachmentInfo
 		{
 			{ m_cbFormat,			m_cbUsage, m_cbWidth, m_cbHeight, *m_cbImageView[0] },
-			{ m_params->srFormat,	m_srUsage, srWidth,   srHeight,   *m_srImageView[0] }
+			{ m_params->srFormat,	m_srUsage, srWidth,   srHeight,   *m_srImageView[0] },
 		};
+		// This would need an additional attachment with m_dsImageView and a barrier to transition the DS layout.
+		// See runFragmentShaderMode for more details.
+		DE_ASSERT(!m_params->useDepthStencil());
+
 		Move<VkFramebuffer> framebuffer = buildFramebuffer(device, vk, *renderPass, attachmentInfo);
 
 		beginCommandBuffer(vk, *cmdBuffer, 0u);
 
 		// wait till sr images layout are changed
-		VkPipelineStageFlags srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		VkPipelineStageFlags srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 		VkPipelineStageFlags dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
 		std::vector<VkImageMemoryBarrier> srImageBarrierGeneral(2,
 			makeImageMemoryBarrier(
 				VK_ACCESS_NONE_KHR,
-				VK_ACCESS_NONE_KHR,
+				(VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT),
 				VK_IMAGE_LAYOUT_UNDEFINED,
 				VK_IMAGE_LAYOUT_GENERAL,
 				**m_srImage[0],
@@ -1650,7 +1820,7 @@ bool AttachmentRateInstance::runCopyModeOnTransferQueue(void)
 		};
 
 		vk::Move<VkDevice>			customDevice	= createDevice(vkp, m_context.getInstance(), vki, pd, &deviceInfo);
-		de::MovePtr<DeviceDriver>	customDriver	= de::MovePtr<DeviceDriver>(new DeviceDriver(vkp, m_context.getInstance(), *customDevice));
+		de::MovePtr<DeviceDriver>	customDriver	= de::MovePtr<DeviceDriver>(new DeviceDriver(vkp, m_context.getInstance(), *customDevice, m_context.getUsedApiVersion()));
 		de::MovePtr<Allocator>		customAllocator	= de::MovePtr<Allocator>(new SimpleAllocator(*customDriver, *customDevice, getPhysicalDeviceMemoryProperties(vki, pd)));
 
 		device						= *customDevice;
@@ -1713,34 +1883,37 @@ bool AttachmentRateInstance::runCopyModeOnTransferQueue(void)
 												   VK_IMAGE_TILING_OPTIMAL, queueFamilies);
 		m_srImageView[0]	= buildImageView(device, vk, m_params->srFormat, m_srImage[0]->get());
 
+		const auto				dsFormat				= m_params->getDSFormat();
 		Move<VkPipelineLayout>	graphicsPipelineLayout	= buildPipelineLayout(device, vk, &(*m_counterBufferDescriptorSetLayout));
-		Move<VkRenderPass>		renderPass				= buildRenderPass(device, vk, m_cbFormat, tileWidth, tileHeight);
-		Move<VkPipeline>		graphicsPipeline		= buildGraphicsPipeline(device, vk, 0, *renderPass, m_cbFormat, *graphicsPipelineLayout, *vertShader, *fragShader);
+		Move<VkRenderPass>		renderPass				= buildRenderPass(device, vk, m_cbFormat, dsFormat, tileWidth, tileHeight);
+		Move<VkPipeline>		graphicsPipeline		= buildGraphicsPipeline(device, vk, 0, *renderPass, m_cbFormat, dsFormat, *graphicsPipelineLayout, *vertShader, *fragShader);
 
 		std::vector<FBAttachmentInfo> attachmentInfo
 		{
 			{ m_cbFormat,			m_cbUsage, m_cbWidth, m_cbHeight, *m_cbImageView[0] },
-			{ m_params->srFormat,	m_srUsage, srWidth,   srHeight,   *m_srImageView[0] }
+			{ m_params->srFormat,	m_srUsage, srWidth,   srHeight,   *m_srImageView[0] },
 		};
+		// This would need an additional attachment with m_dsImageView and a barrier to transition the DS layout.
+		// See runFragmentShaderMode for more details.
+		DE_ASSERT(!m_params->useDepthStencil());
+
 		Move<VkFramebuffer> framebuffer = buildFramebuffer(device, vk, *renderPass, attachmentInfo);
 
 		beginCommandBuffer(vk, *transferCmdBuffer, 0u);
 
 		// wait till sr data is ready in buffer and change sr image layouts to general
-		VkPipelineStageFlags srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		VkPipelineStageFlags srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 		VkPipelineStageFlags dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
-		memoryBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		memoryBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 		std::vector<VkImageMemoryBarrier> srImageBarrierGeneral(2,
 			makeImageMemoryBarrier(
 				VK_ACCESS_NONE_KHR,
-				VK_ACCESS_NONE_KHR,
+				(VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT),
 				VK_IMAGE_LAYOUT_UNDEFINED,
 				VK_IMAGE_LAYOUT_GENERAL,
 				**m_srImage[0],
 				m_defaultImageSubresourceRange));
 		srImageBarrierGeneral[1].image = **srSrcImage;
-		vk.cmdPipelineBarrier(*transferCmdBuffer, srcStageMask, dstStageMask, 0, 1, &memoryBarrier, 0, DE_NULL, 2, srImageBarrierGeneral.data());
+		vk.cmdPipelineBarrier(*transferCmdBuffer, srcStageMask, dstStageMask, 0, 0, nullptr, 0, DE_NULL, 2, srImageBarrierGeneral.data());
 
 		// copy sr data to images
 		const VkBufferImageCopy srCopyBuffer = makeBufferImageCopy({ srWidth, srHeight, 1u }, m_defaultImageSubresourceLayers);
@@ -1931,15 +2104,20 @@ bool AttachmentRateInstance::runFillLinearTiledImage(void)
 			deMemset(rowDst, value, (size_t)srWidth);
 		}
 
+		const auto				dsFormat				= m_params->getDSFormat();
 		Move<VkPipelineLayout>	graphicsPipelineLayout	= buildPipelineLayout(device, vk, &(*m_counterBufferDescriptorSetLayout));
-		Move<VkRenderPass>		renderPass				= buildRenderPass(device, vk, m_cbFormat, tileWidth, tileHeight);
-		Move<VkPipeline>		graphicsPipeline		= buildGraphicsPipeline(device, vk, 0, *renderPass, m_cbFormat, *graphicsPipelineLayout, *vertShader, *fragShader);
+		Move<VkRenderPass>		renderPass				= buildRenderPass(device, vk, m_cbFormat, dsFormat, tileWidth, tileHeight);
+		Move<VkPipeline>		graphicsPipeline		= buildGraphicsPipeline(device, vk, 0, *renderPass, m_cbFormat, dsFormat, *graphicsPipelineLayout, *vertShader, *fragShader);
 
 		std::vector<FBAttachmentInfo> attachmentInfo
 		{
 			{ m_cbFormat,			m_cbUsage, m_cbWidth, m_cbHeight, *m_cbImageView[0] },
-			{ m_params->srFormat,	m_srUsage, srWidth,   srHeight,   *m_srImageView[0] }
+			{ m_params->srFormat,	m_srUsage, srWidth,   srHeight,   *m_srImageView[0] },
 		};
+		// This would need an additional attachment with m_dsImageView and a barrier to transition the DS layout.
+		// See runFragmentShaderMode for more details.
+		DE_ASSERT(!m_params->useDepthStencil());
+
 		Move<VkFramebuffer> framebuffer = buildFramebuffer(device, vk, *renderPass, attachmentInfo);
 
 		beginCommandBuffer(vk, *cmdBuffer, 0u);
@@ -2053,29 +2231,34 @@ bool AttachmentRateInstance::runTwoSubpassMode(void)
 	buildShadingRateObjects(device, vk, m_context.getDefaultAllocator(), 1, sr1Width, sr1Height, m_srUsage);
 	buildCounterBufferObjects(device, vk, m_context.getDefaultAllocator());
 
-	Move<VkRenderPass>		renderPass			= buildRenderPass(device, vk, m_cbFormat, m_minTileSize.width, m_minTileSize.height, m_maxTileSize.width, m_maxTileSize.height);
+	const auto				dsFormat			= m_params->getDSFormat();
+	Move<VkRenderPass>		renderPass			= buildRenderPass(device, vk, m_cbFormat, dsFormat, m_minTileSize.width, m_minTileSize.height, m_maxTileSize.width, m_maxTileSize.height);
 	Move<VkPipelineLayout>	pipelineLayout		= buildPipelineLayout(device, vk, &(*m_counterBufferDescriptorSetLayout));
-	Move<VkPipeline>		graphicsPipeline0	= buildGraphicsPipeline(device, vk, 0, *renderPass, m_cbFormat, *pipelineLayout, *vertShader0, *fragShader);
-	Move<VkPipeline>		graphicsPipeline1	= buildGraphicsPipeline(device, vk, 1, *renderPass, m_cbFormat, *pipelineLayout, *vertShader1, *fragShader);
+	Move<VkPipeline>		graphicsPipeline0	= buildGraphicsPipeline(device, vk, 0, *renderPass, m_cbFormat, dsFormat, *pipelineLayout, *vertShader0, *fragShader);
+	Move<VkPipeline>		graphicsPipeline1	= buildGraphicsPipeline(device, vk, 1, *renderPass, m_cbFormat, dsFormat, *pipelineLayout, *vertShader1, *fragShader);
 
 	std::vector<FBAttachmentInfo> attachmentInfo
 	{
 		{ m_cbFormat,			m_cbUsage, m_cbWidth, m_cbHeight, *m_cbImageView[0] },
 		{ m_params->srFormat,	m_srUsage, sr0Width,  sr0Height,  *m_srImageView[0] },
 		{ m_cbFormat,			m_cbUsage, m_cbWidth, m_cbHeight, *m_cbImageView[1] },
-		{ m_params->srFormat,	m_srUsage, sr1Width,  sr1Height,  *m_srImageView[1] }
+		{ m_params->srFormat,	m_srUsage, sr1Width,  sr1Height,  *m_srImageView[1] },
 	};
+	// This would need an additional attachment with m_dsImageView and a barrier to transition the DS layout.
+	// See runFragmentShaderMode for more details.
+	DE_ASSERT(!m_params->useDepthStencil());
+
 	Move<VkFramebuffer> framebuffer = buildFramebuffer(device, vk, *renderPass, attachmentInfo);
 
 	beginCommandBuffer(vk, *cmdBuffer, 0u);
 
 	// change sr image layouts to general
-	VkPipelineStageFlags srcStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+	VkPipelineStageFlags srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 	VkPipelineStageFlags dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
 	std::vector<VkImageMemoryBarrier> srImageBarrierGeneral(2,
 		makeImageMemoryBarrier(
 			VK_ACCESS_NONE_KHR,
-			VK_ACCESS_NONE_KHR,
+			(VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT),
 			VK_IMAGE_LAYOUT_UNDEFINED,
 			VK_IMAGE_LAYOUT_GENERAL,
 			**m_srImage[0],
@@ -2184,7 +2367,7 @@ private:
 };
 
 AttachmentRateTestCase::AttachmentRateTestCase(tcu::TestContext& context, const char* name, de::SharedPtr<TestParams> params)
-	: vkt::TestCase	(context, name, "")
+	: vkt::TestCase	(context, name)
 	, m_params		(params)
 {
 }
@@ -2237,6 +2420,9 @@ void AttachmentRateTestCase::checkSupport(Context& context) const
 		}
 	}
 
+	if (m_params->mode == TM_MAINTENANCE_5)
+		context.requireDeviceFunctionality("VK_KHR_maintenance5");
+
 	VkFormatFeatureFlags requiredFeatures = 0;
 	if (m_params->mode == TM_SETUP_RATE_WITH_ATOMICS_IN_COMPUTE_SHADER)
 		requiredFeatures = VK_FORMAT_FEATURE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR | VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT;
@@ -2264,6 +2450,19 @@ void AttachmentRateTestCase::checkSupport(Context& context) const
 		}
 		else if ((formatProperties.optimalTilingFeatures & requiredFeatures) != requiredFeatures)
 			TCU_THROW(NotSupportedError, "Required format feature bits not supported");
+	}
+
+	if (m_params->useDepthStencil())
+	{
+		const auto					dsFormat			= m_params->getDSFormat();
+		const VkFormatProperties	dsFormatProperties	= getPhysicalDeviceFormatProperties(vk, pd, dsFormat);
+
+		if ((dsFormatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) == 0)
+		{
+			std::ostringstream msg;
+			msg << dsFormat << " not supported";
+			TCU_THROW(NotSupportedError, msg.str());
+		}
 	}
 }
 
@@ -2323,7 +2522,7 @@ void AttachmentRateTestCase::initPrograms(SourceCollections& programCollection) 
 		programCollection.glslSources.add("vert") << glu::VertexSource(vertTemplate.specialize(specializationMap));
 	}
 
-	if ((m_params->mode == TM_SETUP_RATE_WITH_FRAGMENT_SHADER) || (m_params->mode == TM_MEMORY_ACCESS))
+	if ((m_params->mode == TM_SETUP_RATE_WITH_FRAGMENT_SHADER) || (m_params->mode == TM_MEMORY_ACCESS) || (m_params->mode == TM_MAINTENANCE_5))
 	{
 		// use large triangle that will cover whole color buffer
 		specializationMap["SCALE"]		= "9.0";
@@ -2426,15 +2625,15 @@ void createAttachmentRateTests(tcu::TestContext& testCtx, tcu::TestCaseGroup* pa
 		{ TM_SETUP_RATE_WITH_LINEAR_TILED_IMAGE,								"setup_with_linear_tiled_image" },
 	};
 
-	de::MovePtr<tcu::TestCaseGroup> mainGroup(new tcu::TestCaseGroup(testCtx, "attachment_rate", ""));
+	de::MovePtr<tcu::TestCaseGroup> mainGroup(new tcu::TestCaseGroup(testCtx, "attachment_rate"));
 
 	for (const auto& testModeParam : testModeParams)
 	{
-		de::MovePtr<tcu::TestCaseGroup> testModeGroup(new tcu::TestCaseGroup(testCtx, testModeParam.name, ""));
+		de::MovePtr<tcu::TestCaseGroup> testModeGroup(new tcu::TestCaseGroup(testCtx, testModeParam.name));
 
 		for (const auto& srFormat : srFormats)
 		{
-			de::MovePtr<tcu::TestCaseGroup> formatGroup(new tcu::TestCaseGroup(testCtx, srFormat.name, ""));
+			de::MovePtr<tcu::TestCaseGroup> formatGroup(new tcu::TestCaseGroup(testCtx, srFormat.name));
 			for (const auto& srRate : srRates)
 			{
 				formatGroup->addChild(new AttachmentRateTestCase(testCtx, srRate.name, de::SharedPtr<TestParams>(
@@ -2445,7 +2644,8 @@ void createAttachmentRateTests(tcu::TestContext& testCtx, tcu::TestCaseGroup* pa
 						srRate.count,							// VkExtent2D		srRate;
 						groupParams->useDynamicRendering,		// bool				useDynamicRendering;
 						false,									// bool				useImagelessFramebuffer;
-						false									// bool				useNullShadingRateImage;
+						false,									// bool				useNullShadingRateImage;
+						tcu::Nothing,							// OptDSParams		dsParams;
 					}
 				)));
 
@@ -2461,7 +2661,8 @@ void createAttachmentRateTests(tcu::TestContext& testCtx, tcu::TestCaseGroup* pa
 							srRate.count,						// VkExtent2D		srRate;
 							false,								// bool				useDynamicRendering;
 							false,								// bool				useImagelessFramebuffer;
-							true								// bool				useNullShadingRateImage;
+							true,								// bool				useNullShadingRateImage;
+							tcu::Nothing,						// OptDSParams		dsParams;
 						}
 					)));
 				}
@@ -2478,7 +2679,8 @@ void createAttachmentRateTests(tcu::TestContext& testCtx, tcu::TestCaseGroup* pa
 							srRate.count,						// VkExtent2D		srRate;
 							false,								// bool				useDynamicRendering;
 							true,								// bool				useImagelessFramebuffer;
-							false								// bool				useNullShadingRateImage;
+							false,								// bool				useNullShadingRateImage;
+							tcu::Nothing,						// OptDSParams		dsParams;
 						}
 					)));
 				}
@@ -2490,9 +2692,9 @@ void createAttachmentRateTests(tcu::TestContext& testCtx, tcu::TestCaseGroup* pa
 		mainGroup->addChild(testModeGroup.release());
 	}
 
+	de::MovePtr<tcu::TestCaseGroup> miscGroup(new tcu::TestCaseGroup(testCtx, "misc"));
 	if (!groupParams->useDynamicRendering)
 	{
-		de::MovePtr<tcu::TestCaseGroup> miscGroup(new tcu::TestCaseGroup(testCtx, "misc", ""));
 		miscGroup->addChild(new AttachmentRateTestCase(testCtx, "two_subpass", de::SharedPtr<TestParams>(
 			new TestParams
 			{
@@ -2501,7 +2703,8 @@ void createAttachmentRateTests(tcu::TestContext& testCtx, tcu::TestCaseGroup* pa
 				{0, 0},											// VkExtent2D		srRate;					// not used in TM_TWO_SUBPASS
 				false,											// bool				useDynamicRendering;
 				false,											// bool				useImagelessFramebuffer;
-				false											// bool				useNullShadingRateImage;
+				false,											// bool				useNullShadingRateImage;
+				tcu::Nothing,									// OptDSParams		dsParams;
 			}
 		)));
 		miscGroup->addChild(new AttachmentRateTestCase(testCtx, "memory_access", de::SharedPtr<TestParams>(
@@ -2512,11 +2715,61 @@ void createAttachmentRateTests(tcu::TestContext& testCtx, tcu::TestCaseGroup* pa
 				{1, 1},											// VkExtent2D		srRate;
 				false,											// bool				useDynamicRendering;
 				false,											// bool				useImagelessFramebuffer;
-				false											// bool				useNullShadingRateImage;
+				false,											// bool				useNullShadingRateImage;
+				tcu::Nothing,									// OptDSParams		dsParams;
 			}
 		)));
-		mainGroup->addChild(miscGroup.release());
+		{
+			const VkImageLayout testedLayouts[] =
+			{
+				VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL_KHR,
+				VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+				VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL,
+				VK_IMAGE_LAYOUT_GENERAL,
+			};
+
+			const auto skip = strlen("VK_IMAGE_LAYOUT_");
+
+			for (const auto& layout : testedLayouts)
+			{
+				const auto			dsFormat	= ((layout == VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL) ? VK_FORMAT_S8_UINT : VK_FORMAT_D16_UNORM);
+				const std::string	layoutName	= de::toLower(de::toString(layout).substr(skip));
+				const std::string	testName	= "ro_ds_" + layoutName;
+
+				miscGroup->addChild(new AttachmentRateTestCase(testCtx, testName.c_str(), de::SharedPtr<TestParams>(
+					new TestParams
+					{
+						TM_MEMORY_ACCESS,						// TestMode			mode;
+						VK_FORMAT_R8_UINT,						// VkFormat			srFormat;
+						{2, 2},									// VkExtent2D		srRate;
+						false,									// bool				useDynamicRendering;
+						false,									// bool				useImagelessFramebuffer;
+						false,									// bool				useNullShadingRateImage;
+						DepthStencilParams{dsFormat, layout},	// OptDSParams		dsParams;
+					}
+				)));
+			}
+		}
 	}
+	else
+	{
+#ifndef CTS_USES_VULKANSC
+		miscGroup->addChild(new AttachmentRateTestCase(testCtx, "maintenance5", de::SharedPtr<TestParams>(
+			new TestParams
+			{
+				TM_MAINTENANCE_5,								// TestMode			mode;
+				VK_FORMAT_R8_UINT,								// VkFormat			srFormat;
+				{1, 1},											// VkExtent2D		srRate;
+				true,											// bool				useDynamicRendering;
+				false,											// bool				useImagelessFramebuffer;
+				false,											// bool				useNullShadingRateImage;
+				tcu::Nothing									// OptDSParams		dsParams;
+			}
+		)));
+#endif
+	}
+	if (!miscGroup->empty())
+		mainGroup->addChild(miscGroup.release());
 
 	parentGroup->addChild(mainGroup.release());
 }

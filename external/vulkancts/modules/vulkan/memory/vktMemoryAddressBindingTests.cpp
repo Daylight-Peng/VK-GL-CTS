@@ -201,10 +201,17 @@ static Move<VkDevice> createDeviceWithAdressBindingReport (	deBool								isVali
 	const char* const										enabledExtensions[]				= {"VK_EXT_device_address_binding_report"};
 	VkPhysicalDeviceFeatures								features						= getPhysicalDeviceFeatures(vki, physicalDevice);
 
+	VkPhysicalDeviceAddressBindingReportFeaturesEXT deviceAddressBindingReportFeatures
+	{
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT,
+		DE_NULL,
+		VK_TRUE
+	};
+
 	const VkPhysicalDeviceFeatures2						enabledFeatures2				=
 	{
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,							// VkStructureType						sType;
-		DE_NULL,																// const void*							pNext;
+		&deviceAddressBindingReportFeatures,									// const void*							pNext;
 		features																// VkPhysicalDeviceFeatures				features;
 	};
 	const VkDeviceQueueCreateInfo						queueCreateInfo					=
@@ -1599,17 +1606,11 @@ struct CaseDescriptions
 };
 
 template<typename Object>
-static void checkSupport (Context& context, typename Object::Parameters)
-{
-	context.requireDeviceFunctionality("VK_EXT_device_address_binding_report");
-}
-
-template<typename Object>
 void addCases (const MovePtr<tcu::TestCaseGroup>& group, const CaseDescription<Object>& cases)
 {
 	for (const NamedParameters<Object>* cur = cases.paramsBegin; cur != cases.paramsEnd; cur++)
 	{
-		addFunctionCase(group.get(), cur->name, "", checkSupport<Object>, cases.function, cur->parameters);
+		addFunctionCase(group.get(), cur->name, cases.function, cur->parameters);
 	}
 }
 
@@ -1618,13 +1619,13 @@ void addCasesWithProgs (const MovePtr<tcu::TestCaseGroup>& group, const CaseDesc
 {
 	for (const NamedParameters<Object>* cur = cases.paramsBegin; cur != cases.paramsEnd; cur++)
 	{
-		addFunctionCaseWithPrograms(group.get(), cur->name, "", checkSupport<Object>, Object::initPrograms, cases.function, cur->parameters);
+		addFunctionCaseWithPrograms(group.get(), cur->name, Object::initPrograms, cases.function, cur->parameters);
 	}
 }
 
-tcu::TestCaseGroup* createObjectTestsGroup (tcu::TestContext& testCtx, const char* name, const char* desc, const CaseDescriptions& cases)
+tcu::TestCaseGroup* createObjectTestsGroup (tcu::TestContext& testCtx, const char* name, const CaseDescriptions& cases)
 {
-	MovePtr<tcu::TestCaseGroup>	group	(new tcu::TestCaseGroup(testCtx, name, desc));
+	MovePtr<tcu::TestCaseGroup>	group	(new tcu::TestCaseGroup(testCtx, name));
 
 	addCases			(group, cases.device);
 	addCases			(group, cases.deviceMemory);
@@ -1731,6 +1732,37 @@ static std::vector<std::string> getInstanceExtensions(const deUint32 instanceVer
 	return instanceExtensions;
 }
 
+static bool checkSupport(CustomInstance& customInstance, vk::VkPhysicalDevice& physicalDevice)
+{
+	const std::vector<VkExtensionProperties> extensions = enumerateDeviceExtensionProperties(customInstance.getDriver(), physicalDevice, DE_NULL);
+
+	for (size_t extNdx = 0; extNdx < extensions.size(); extNdx++)
+	{
+		if (deStringEqual("VK_EXT_device_address_binding_report", extensions[extNdx].extensionName))
+		{
+			VkPhysicalDeviceAddressBindingReportFeaturesEXT deviceAddressBindingReportFeatures
+			{
+				VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ADDRESS_BINDING_REPORT_FEATURES_EXT,
+				DE_NULL,
+				VK_FALSE
+			};
+
+			VkPhysicalDeviceFeatures2 availFeatures;
+			availFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+			availFeatures.pNext = &deviceAddressBindingReportFeatures;
+
+			customInstance.getDriver().getPhysicalDeviceFeatures2(physicalDevice, &availFeatures);
+
+			if (deviceAddressBindingReportFeatures.reportAddressBinding == VK_TRUE)
+				return true;
+			else
+				return false;
+		}
+	}
+
+	return false;
+}
+
 template<typename Object>
 tcu::TestStatus createDestroyObjectTest (Context& context, typename Object::Parameters params)
 {
@@ -1740,6 +1772,11 @@ tcu::TestStatus createDestroyObjectTest (Context& context, typename Object::Para
 	CustomInstance          customInstance		= createCustomInstanceWithExtensions(context, getInstanceExtensions(context.getUsedApiVersion()));
 	vk::VkPhysicalDevice	physicalDevice		= chooseDevice(customInstance.getDriver(), customInstance, context.getTestContext().getCommandLine());
 	deUint32				queueFamilyIndex	= 0;
+
+	if (!checkSupport(customInstance, physicalDevice))
+	{
+		TCU_THROW(NotSupportedError, "Device address binding report not supported");
+	}
 
 	const std::vector<VkQueueFamilyProperties>	queueProps = getPhysicalDeviceQueueFamilyProperties(customInstance.getDriver(), physicalDevice);
 
@@ -1752,53 +1789,56 @@ tcu::TestStatus createDestroyObjectTest (Context& context, typename Object::Para
 		}
 	}
 
-	Move<VkDevice> device = createDeviceWithAdressBindingReport(
-		context.getTestContext().getCommandLine().isValidationEnabled(),
-		context.getPlatformInterface(),
-		customInstance,
-		customInstance.getDriver(),
-		physicalDevice,
-		queueFamilyIndex);
-
-	de::MovePtr<DeviceDriver> deviceInterface = de::MovePtr<DeviceDriver>(new DeviceDriver(context.getPlatformInterface(), customInstance, device.get()));
-
-	const Environment	env	(context.getPlatformInterface(),
-							 customInstance.getDriver(),
-							 customInstance,
-							 physicalDevice,
-							 *deviceInterface.get(),
-							 device.get(),
-							 queueFamilyIndex,
-							 context.getBinaryCollection(),
-							 context.getTestContext().getCommandLine(),
-							 &recorder);
-
 	VkDebugUtilsMessengerCreateInfoEXT debugUtilsMessengerCreateInfo =
-	{
-		VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-		nullptr,
-		0,
-		VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT,
-		VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT,
-		recorder.callback,
-		&recorder
-	};
+		{
+			VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+			nullptr,
+			0,
+			VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT,
+			VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT,
+			recorder.callback,
+			&recorder
+		};
 
-	env.vki.createDebugUtilsMessengerEXT(
-		customInstance,
-		&debugUtilsMessengerCreateInfo,
-		nullptr,
-		&messenger);
+	customInstance.getDriver().createDebugUtilsMessengerEXT(
+			customInstance,
+			&debugUtilsMessengerCreateInfo,
+			nullptr,
+			&messenger);
 
 	{
-		const typename Object::Resources	res					(env, params);
-		Unique<typename Object::Type>		obj	(Object::create(env, res, params));
+		Move<VkDevice> device = createDeviceWithAdressBindingReport(
+			context.getTestContext().getCommandLine().isValidationEnabled(),
+			context.getPlatformInterface(),
+			customInstance,
+			customInstance.getDriver(),
+			physicalDevice,
+			queueFamilyIndex);
+
+		de::MovePtr<DeviceDriver> deviceInterface = de::MovePtr<DeviceDriver>(new DeviceDriver(context.getPlatformInterface(), customInstance, device.get(), context.getUsedApiVersion()));
+
+		const Environment	env	(context.getPlatformInterface(),
+								customInstance.getDriver(),
+								customInstance,
+								physicalDevice,
+								*deviceInterface.get(),
+								device.get(),
+								queueFamilyIndex,
+								context.getBinaryCollection(),
+								context.getTestContext().getCommandLine(),
+								&recorder);
+
+
+		{
+			const typename Object::Resources	res					(env, params);
+			Unique<typename Object::Type>		obj	(Object::create(env, res, params));
+		}
 	}
 
-	env.vki.destroyDebugUtilsMessengerEXT(
-		customInstance,
-		messenger,
-		nullptr);
+	customInstance.getDriver().destroyDebugUtilsMessengerEXT(
+			customInstance,
+			messenger,
+			nullptr);
 
 	if (!validateCallbackRecords(context, recorder))
 	{
@@ -1813,7 +1853,7 @@ tcu::TestStatus createDestroyObjectTest (Context& context, typename Object::Para
 
 tcu::TestCaseGroup* createAddressBindingReportTests (tcu::TestContext& testCtx)
 {
-	MovePtr<tcu::TestCaseGroup>	addressBindingReportTests  (new tcu::TestCaseGroup(testCtx, "address_binding_report", "Address Binding Report tests"));
+	MovePtr<tcu::TestCaseGroup>	addressBindingReportTests  (new tcu::TestCaseGroup(testCtx, "address_binding_report"));
 
 	const Image::Parameters		img1D			(0u,
 												 VK_IMAGE_TYPE_1D,
@@ -2029,7 +2069,8 @@ tcu::TestCaseGroup* createAddressBindingReportTests (tcu::TestContext& testCtx)
 		CASE_DESC(createDestroyObjectTest	<CommandPool>,			s_commandPoolCases),
 		CASE_DESC(createDestroyObjectTest	<CommandBuffer>,		s_commandBufferCases),
 	};
-	addressBindingReportTests->addChild(createObjectTestsGroup(testCtx, "create_and_destroy_object", "Check emitted callbacks are properly paired", s_createDestroyObjectGroup));
+	// Check emitted callbacks are properly paired
+	addressBindingReportTests->addChild(createObjectTestsGroup(testCtx, "create_and_destroy_object", s_createDestroyObjectGroup));
 
 	return addressBindingReportTests.release();
 }
